@@ -1,0 +1,34 @@
+ARCH = x86_64
+
+LIB_PATH	= /usr/lib
+EFI_INC 	= /usr/include/efi
+
+# Compiler Flags
+# -fno-stack-protector: The OS isn't loaded, so there is no stack monitor.
+# -fpic: Position Independent Code (UEFI relocates code in RAM).
+# -mno-red-zone: The "Red Zone" is an optimization for x86_64 that conflicts with interrupts/firmware.
+CFLAGS          = -I$(EFI_INC) -I$(EFI_INC)/$(ARCH) -I$(EFI_INC)/protocol \
+                  -fno-stack-protector -fpic -fshort-wchar -mno-red-zone \
+                  -Wall -DEFI_FUNCTION_WRAPPER
+
+# Linker Flags
+LDFLAGS         = -nostdlib -znocombreloc -T $(LIB_PATH)/elf_$(ARCH)_efi.lds -shared \
+                  -Bsymbolic -L $(LIB_PATH) $(LIB_PATH)/crt0-efi-$(ARCH).o
+
+# Targets
+all: BOOTX64.EFI
+
+main.o: main.c
+	gcc $(CFLAGS) -c $< -o $@
+
+main.so: main.o
+	ld $(LDFLAGS) $< -o $@ -lgnuefi -lefi
+
+BOOTX64.EFI: main.so
+	objcopy -j .text -j .sdata -j .data -j .dynamic \
+		-j .dynsym  -j .rel -j .rela -j .reloc \
+		--target=efi-app-$(ARCH) $< $@
+	mv $@ ./usb_drive/EFI/BOOT
+
+clean:
+	rm -f *.o *.so ./usb_drive/EFI/BOOT/*.EFI
