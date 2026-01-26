@@ -20,6 +20,8 @@
 
 
 #include <ctype.h>
+#include <efi.h>
+#include <efilib.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

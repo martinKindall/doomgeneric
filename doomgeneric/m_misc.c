@@ -32,7 +32,9 @@
 #include <direct.h>
 #endif
 #else
+#if 0
 #include <sys/stat.h>
+#endif
 #include <sys/types.h>
 #endif
 

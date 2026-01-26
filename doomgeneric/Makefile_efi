@@ -4,31 +4,49 @@ LIB_PATH	= /usr/lib
 EFI_INC 	= /usr/include/efi
 
 # Compiler Flags
-# -fno-stack-protector: The OS isn't loaded, so there is no stack monitor.
-# -fpic: Position Independent Code (UEFI relocates code in RAM).
-# -mno-red-zone: The "Red Zone" is an optimization for x86_64 that conflicts with interrupts/firmware.
 CFLAGS          = -I$(EFI_INC) -I$(EFI_INC)/$(ARCH) -I$(EFI_INC)/protocol \
+                  -I./pseudo_include -I. \
                   -fno-stack-protector -fpic -fshort-wchar -mno-red-zone \
-                  -Wall -DEFI_FUNCTION_WRAPPER
+                  -Wall -DEFI_FUNCTION_WRAPPER -DDOOMGENERIC_RESX=640 -DDOOMGENERIC_RESY=400 \
+                  -ffreestanding
 
 # Linker Flags
 LDFLAGS         = -nostdlib -znocombreloc -T $(LIB_PATH)/elf_$(ARCH)_efi.lds -shared \
                   -Bsymbolic -L $(LIB_PATH) $(LIB_PATH)/crt0-efi-$(ARCH).o
 
+# Source files
+SRC_DOOM = am_map.c doomdef.c doomstat.c dstrings.c d_event.c d_items.c d_iwad.c \
+		d_loop.c d_main.c d_mode.c d_net.c f_finale.c f_wipe.c g_game.c hu_lib.c \
+		hu_stuff.c info.c i_cdmus.c i_endoom.c i_joystick.c i_scale.c i_sound.c i_system.c \
+		i_timer.c memio.c m_argv.c m_bbox.c m_cheat.c m_config.c m_controls.c \
+		m_fixed.c m_menu.c m_misc.c m_random.c p_ceilng.c p_doors.c p_enemy.c \
+		p_floor.c p_inter.c p_lights.c p_map.c p_maputl.c p_mobj.c p_plats.c \
+		p_pspr.c p_saveg.c p_setup.c p_sight.c p_spec.c p_switch.c p_telept.c \
+		p_tick.c p_user.c r_bsp.c r_data.c r_draw.c r_main.c r_plane.c r_segs.c \
+		r_sky.c r_things.c sha1.c sounds.c statdump.c st_lib.c st_stuff.c s_sound.c \
+		tables.c v_video.c wi_stuff.c w_checksum.c w_file.c w_main.c w_wad.c \
+		z_zone.c w_file_stdc.c i_input.c i_video.c doomgeneric.c
+
+SRC_EFI = doomgeneric_efi.c
+
+SRC_SHIMS = pseudo_include/strings_extension.c pseudo_include/malloc_extension.c pseudo_include/ctype.c pseudo_include/stdio.c
+
+OBJS = $(SRC_DOOM:.c=.o) $(SRC_EFI:.c=.o) $(SRC_SHIMS:.c=.o)
+
 # Targets
 all: BOOTX64.EFI
 
-main.o: main.c
+%.o: %.c
 	gcc $(CFLAGS) -c $< -o $@
 
-main.so: main.o
-	ld $(LDFLAGS) $< -o $@ -lgnuefi -lefi
+doomgeneric.so: $(OBJS)
+	ld $(LDFLAGS) $(OBJS) -o $@ -lgnuefi -lefi
 
-BOOTX64.EFI: main.so
+BOOTX64.EFI: doomgeneric.so
 	objcopy -j .text -j .sdata -j .data -j .dynamic \
 		-j .dynsym  -j .rel -j .rela -j .reloc \
 		--target=efi-app-$(ARCH) $< $@
-	mv $@ ./usb_drive/EFI/BOOT
+#	mv $@ ./usb_drive/EFI/BOOT
 
 clean:
-	rm -f *.o *.so ./usb_drive/EFI/BOOT/*.EFI
+	rm -f *.o pseudo_include/*.o *.so *.EFI

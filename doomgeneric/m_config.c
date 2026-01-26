@@ -18,6 +18,8 @@
 //
 
 
+#include <efi.h>
+#include <efilib.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1564,8 +1566,11 @@ static default_t *SearchCollection(default_collection_t *collection, char *name)
 {
     int i;
 
+    if (name == NULL) return NULL;
+
     for (i=0; i<collection->numdefaults; ++i) 
     {
+        if (collection->defaults[i].name == NULL) continue;
         if (!strcmp(name, collection->defaults[i].name))
         {
             return &collection->defaults[i];
@@ -1938,20 +1943,16 @@ static default_t *GetDefaultForName(char *name)
 {
     default_t *result;
 
-    // Try the main list and the extras
+    if (name == NULL) {
+        return NULL;
+    }
 
+    // Try the main list and the extras
     result = SearchCollection(&doom_defaults, name);
 
     if (result == NULL)
     {
         result = SearchCollection(&extra_defaults, name);
-    }
-
-    // Not found? Internal error.
-
-    if (result == NULL)
-    {
-        I_Error("Unknown configuration variable: '%s'", name);
     }
 
     return result;
@@ -1966,6 +1967,9 @@ void M_BindVariable(char *name, void *location)
     default_t *variable;
 
     variable = GetDefaultForName(name);
+
+    if (variable == NULL)
+        return;
 
     variable->location = location;
     variable->bound = true;
@@ -2042,11 +2046,7 @@ float M_GetFloatVariable(char *name)
 
 static char *GetDefaultConfigDir(void)
 {
-    char *result = (char *)malloc(2);
-    result[0] = '.';
-    result[1] = '\0';
-
-    return result;
+    return ".";
 }
 
 // 
@@ -2071,7 +2071,7 @@ void M_SetConfigDir(char *dir)
 
     if (strcmp(configdir, "") != 0)
     {
-        printf("Using %s for configuration and saves\n", configdir);
+        // printf("Using %s for configuration and saves\n", configdir);
     }
 
     // Make the directory if it doesn't already exist:
