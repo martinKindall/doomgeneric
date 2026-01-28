@@ -180,10 +180,14 @@ void cmap_to_fb(uint8_t *out, uint8_t *in, int in_pixels)
         }
         else if (s_Fb.bits_per_pixel == 32)
         {
-            // Assuming RGBA8888
+            // Assuming RGBA8888 or BGRA8888
             pix = (c.r << s_Fb.red.offset) |
                   (c.g << s_Fb.green.offset) |
                   (c.b << s_Fb.blue.offset);
+            
+            // [FIX] OR in the Alpha/Transparency mask to ensure opacity
+            // Check your s_Fb.transp.offset (usually 24).
+            pix |= (0xFF << s_Fb.transp.offset);
 
 #ifdef SYS_BIG_ENDIAN
             pix = swapLE32(pix);
@@ -387,36 +391,20 @@ void I_ReadScreen (byte* scr)
 
 void I_SetPalette (byte* palette)
 {
-	int i;
-	//col_t* c;
-
-	//for (i = 0; i < 256; i++)
-	//{
-	//	c = (col_t*)palette;
-
-	//	rgb565_palette[i] = GFX_RGB565(gammatable[usegamma][c->r],
-	//								   gammatable[usegamma][c->g],
-	//								   gammatable[usegamma][c->b]);
-
-	//	palette += 3;
-	//}
+    int i;
     
-
-    /* performance boost:
-     * map to the right pixel format over here! */
-
+    // [FIX] Bypass gammatable which requires working float/pow() support.
+    // [FIX] Force Alpha to 0xFF (Opaque) in case GOP respects transparency.
     for (i=0; i<256; ++i ) {
-        colors[i].a = 0;
-        colors[i].r = gammatable[usegamma][*palette++];
-        colors[i].g = gammatable[usegamma][*palette++];
-        colors[i].b = gammatable[usegamma][*palette++];
+        colors[i].a = 0xFF; // Force Opaque
+        colors[i].r = *palette++; // Use raw palette value directly
+        colors[i].g = *palette++;
+        colors[i].b = *palette++;
     }
 
 #ifdef CMAP256
-
     palette_changed = true;
-
-#endif  // CMAP256
+#endif 
 }
 
 // Given an RGB value, find the closest matching palette index.
