@@ -40,7 +40,7 @@ void DG_Init() {
     // 1. Allocate the 32-bit screen buffer
     // Width * Height * 4 bytes-per-pixel
     DG_ScreenBuffer = malloc(DOOMGENERIC_RESX * DOOMGENERIC_RESY * 4);
-    
+
     // 2. Clear it to a debug color (e.g., Purple) to prove allocation worked
     if (DG_ScreenBuffer) {
         memset(DG_ScreenBuffer, 0xFF00FF, DOOMGENERIC_RESX * DOOMGENERIC_RESY * 4);
@@ -169,7 +169,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     calibrate_tsc();
     start_tsc = read_tsc();
 
-    char* argv[] = {"doomgeneric", "-iwad", "doom1.wad", NULL};
+    char* argv[] = {"doomgeneric", "-iwad", "\\doom1.wad", NULL};
     doomgeneric_Create(3, argv);
 
     while(1) {

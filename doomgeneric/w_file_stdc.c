@@ -23,8 +23,6 @@
 #include "w_file.h"
 #include "z_zone.h"
 
-#include "doom_wad.h"
-
 typedef struct
 {
     wad_file_t wad;
