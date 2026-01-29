@@ -18,6 +18,13 @@ static uint8_t key_current_state[256] = {0};
 
 static EFI_GRAPHICS_OUTPUT_PROTOCOL *gop = NULL;
 
+// --- DIRECT FRAMEBUFFER GLOBALS (The fix from main.c) ---
+static UINT32 *FrameBufferBase = NULL;
+static UINT32 ScreenWidth = 0;
+static UINT32 ScreenHeight = 0;
+static UINT32 PixelsPerScanLine = 0;
+// --------------------------------------------------------
+
 // Timing related
 static UINT64 tsc_freq = 0;
 static UINT64 start_tsc = 0;
@@ -37,13 +44,15 @@ static void calibrate_tsc() {
 }
 
 void DG_Init() {
-    // 1. Allocate the 32-bit screen buffer
-    // Width * Height * 4 bytes-per-pixel
-    DG_ScreenBuffer = malloc(DOOMGENERIC_RESX * DOOMGENERIC_RESY * 4);
-    
-    // 2. Clear it to a debug color (e.g., Purple) to prove allocation worked
+    // OLD: Allocates only for 640x400
+    // DG_ScreenBuffer = malloc(DOOMGENERIC_RESX * DOOMGENERIC_RESY * 4);
+
+    // NEW: Allocate enough for the full physical screen (1920x1080 * 4 bytes approx 8MB)
+    // We use a safe upper limit to handle scaling.
+    DG_ScreenBuffer = malloc(1920 * 1080 * 4);
+
     if (DG_ScreenBuffer) {
-        memset(DG_ScreenBuffer, 0xFF00FF, DOOMGENERIC_RESX * DOOMGENERIC_RESY * 4);
+        memset(DG_ScreenBuffer, 0, 1920 * 1080 * 4);
     }
 }
 
@@ -53,43 +62,58 @@ void DG_DrawFrame() {
         if (key_countdown[i] > 0) key_countdown[i]--;
     }
 
-    if (!gop || !DG_ScreenBuffer) return;
-
-    // 2. HEARTBEAT (Debug): 
-    // Flashing Green (Active) vs Red (Stalled).
-    static int frame_count = 0;
-    frame_count++;
-    // Write directly to buffer
-    DG_ScreenBuffer[0] = (frame_count % 10 < 5) ? 0x00FF00 : 0x000000;
-
-    // 3. THE FIX: FLUSH CACHE
-    // This assembly instruction forces the CPU to write all cache lines to RAM.
-    // Without this, the GOP hardware reads empty zeros from RAM while 
-    // your game pixels are stuck in the CPU L1/L2 cache.
-    __asm__ __volatile__ ("wbinvd" ::: "memory");
-
-    // 4. Calculate Centering
-    UINT32 screen_width = gop->Mode->Info->HorizontalResolution;
-    UINT32 screen_height = gop->Mode->Info->VerticalResolution;
-    
-    // Safety check to prevent huge Blts from crashing
-    if (DOOMGENERIC_RESX > screen_width || DOOMGENERIC_RESY > screen_height) {
-        return; 
+    // Safety checks: We need the GOP, the Doom Buffer, and the Hardware Framebuffer
+    if (!gop || !DG_ScreenBuffer || !FrameBufferBase) {
+        Print(L"Something weird happened...\n");
+        return;
     }
 
-    UINT32 start_x = (screen_width - DOOMGENERIC_RESX) / 2;
-    UINT32 start_y = (screen_height - DOOMGENERIC_RESY) / 2;
+    // Note: Commenting this out to speed up the loop, 
+    // strictly speaking, you shouldn't print every frame unless debugging.
+    // Print(L"Drawing...\n"); 
 
-    // 5. Blt to Screen
-    uefi_call_wrapper(gop->Blt, 10, 
-        gop, 
-        (EFI_GRAPHICS_OUTPUT_BLT_PIXEL*)DG_ScreenBuffer, 
-        EfiBltBufferToVideo, 
-        0, 0,           // Source X, Y
-        start_x, start_y, // Dest X, Y
-        DOOMGENERIC_RESX, DOOMGENERIC_RESY, // Width, Height
-        0 // Delta
-    );
+    // 2. Centering Calculations
+    UINT32 start_x = 0;
+    UINT32 start_y = 0;
+
+    if (ScreenWidth > DOOMGENERIC_RESX)
+        start_x = (ScreenWidth - DOOMGENERIC_RESX) / 2;
+
+    if (ScreenHeight > DOOMGENERIC_RESY)
+        start_y = (ScreenHeight - DOOMGENERIC_RESY) / 2;
+
+    // 3. Direct Memory Copy (Manual Loop Implementation)
+    
+    // Cast both buffers to UINT32 pointer to treat them as pixels
+    UINT32 *src = (UINT32*)DG_ScreenBuffer;
+    // Ensure FrameBufferBase is treated as a UINT32 pointer
+    UINT32 *destBase = (UINT32*)FrameBufferBase; 
+
+    for (UINT32 y = 0; y < DOOMGENERIC_RESY; y++) {
+        if ((start_y + y) >= ScreenHeight) break;
+
+        UINT32 *row_src = &src[y * DOOMGENERIC_RESX];
+        
+        // Use PixelsPerScanLine (2048) for the math, as you are doing now.
+        UINT32 dest_index = ((start_y + y) * PixelsPerScanLine) + start_x;
+        UINT32 *row_dest = &destBase[dest_index];
+
+        // --- DEBUG TEST ---
+        // 1. Force the source row to be PURE WHITE.
+        // This proves if the "drawing" part works.
+        // After you see the white box, delete this loop.
+        for(int k=0; k<DOOMGENERIC_RESX; k++) {
+             row_src[k] = 0xFFFFFFFF; 
+        }
+        // ------------------
+
+        uefi_call_wrapper(ST->BootServices->CopyMem, 3, 
+                          row_dest, 
+                          row_src, 
+                          DOOMGENERIC_RESX * 4);
+    }
+
+    // __asm__ __volatile__ ("wbinvd" ::: "memory");
 }
 
 void DG_SleepMs(uint32_t ms) {
@@ -150,7 +174,7 @@ void DG_SetWindowTitle(const char * title) {}
 EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     InitializeLib(ImageHandle, SystemTable);
 
-    // 1. Disable Watchdog Timer (Prevents system reset during long load/play)
+    // 1. Disable Watchdog Timer
     uefi_call_wrapper(SystemTable->BootServices->SetWatchdogTimer, 4, 0, 0, 0, NULL);
 
     EFI_GUID gopGuid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
@@ -160,6 +184,23 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
         Print(L"GOP Not Found.\n");
         return status;
     }
+
+    // --- SETUP DIRECT FRAMEBUFFER INFO ---
+    FrameBufferBase = (UINT32*) gop->Mode->FrameBufferBase;
+    ScreenWidth = gop->Mode->Info->HorizontalResolution;
+    ScreenHeight = gop->Mode->Info->VerticalResolution;
+    PixelsPerScanLine = gop->Mode->Info->PixelsPerScanLine;
+
+    // FIX: If UEFI returns 0 (common bug), use ScreenWidth instead.
+    if (PixelsPerScanLine == 0) {
+        Print(L"Fixing PixelsPerScanLine (was 0)\n");
+        PixelsPerScanLine = ScreenWidth;
+    }
+
+    Print(L"Resolution: %d x %d\n", ScreenWidth, ScreenHeight);
+    Print(L"ScanLine: %d\n", PixelsPerScanLine); // Print this to verify!
+    Print(L"FB Base: 0x%lx\n", (UINT64)FrameBufferBase);
+    // -------------------------------------
 
     // 2. Hide Console Cursor
     uefi_call_wrapper(SystemTable->ConOut->EnableCursor, 2, SystemTable->ConOut, FALSE);
