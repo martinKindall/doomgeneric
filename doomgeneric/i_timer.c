@@ -40,18 +40,10 @@ int I_GetTicks(void)
 	return DG_GetTicksMs();
 }
 
-int  I_GetTime (void)
-{
-    uint32_t ticks;
-
-    ticks = I_GetTicks();
-
-    if (basetime == 0)
-        basetime = ticks;
-
-    ticks -= basetime;
-
-    return (ticks * TICRATE) / 1000;
+int I_GetTime(void) {
+    uint32_t ms = I_GetTicks();
+    // 35 tics per second = 1000ms / 35 = ~28.57ms per tic
+    return ms * 35 / 1000;
 }
 
 

@@ -3,6 +3,7 @@
 
 #include "doomgeneric.h"
 #include "doomkeys.h"
+#include <string.h>
 
 // Define resolution defaults if Makefile doesn't
 #ifndef DOOMGENERIC_RESX
@@ -36,11 +37,26 @@ static UINT64 read_tsc() {
 }
 
 static void calibrate_tsc() {
-    UINT64 start = read_tsc();
-    uefi_call_wrapper(ST->BootServices->Stall, 1, 100000); // 100ms
-    UINT64 end = read_tsc();
-    tsc_freq = (end - start) * 10;
-    if (tsc_freq == 0) tsc_freq = 2000000000;
+    UINT64 t1, t2;
+    
+    // 1. Snapshot TSC
+    t1 = read_tsc();
+    
+    // 2. Wait exactly 100,000 microseconds (0.1 seconds)
+    // The UEFI firmware provides this high-precision delay
+    uefi_call_wrapper(ST->BootServices->Stall, 1, 100000);
+    
+    // 3. Snapshot TSC again
+    t2 = read_tsc();
+    
+    // 4. Calculate ticks per second (delta * 10 because we waited 0.1s)
+    tsc_freq = (t2 - t1) * 10;
+    
+    // Avoid division by zero paranoia
+    if (tsc_freq == 0) tsc_freq = 1; 
+    
+    // Print it just so we know it worked (debug info)
+    Print(L"TSC Calibrated: %lu Hz\r\n", tsc_freq);
 }
 
 void DG_Init() {
@@ -56,64 +72,38 @@ void DG_Init() {
     }
 }
 
+typedef struct { unsigned char r, g, b; } dg_palette_entry_t;
+extern dg_palette_entry_t DG_Palette[256];
+
 void DG_DrawFrame() {
-    // 1. Input Maintenance
-    for (int i = 0; i < 256; i++) {
-        if (key_countdown[i] > 0) key_countdown[i]--;
-    }
-
-    // Safety checks: We need the GOP, the Doom Buffer, and the Hardware Framebuffer
-    if (!gop || !DG_ScreenBuffer || !FrameBufferBase) {
-        Print(L"Something weird happened...\n");
-        return;
-    }
-
-    // Note: Commenting this out to speed up the loop, 
-    // strictly speaking, you shouldn't print every frame unless debugging.
-    // Print(L"Drawing...\n"); 
-
-    // 2. Centering Calculations
-    UINT32 start_x = 0;
-    UINT32 start_y = 0;
-
-    if (ScreenWidth > DOOMGENERIC_RESX)
-        start_x = (ScreenWidth - DOOMGENERIC_RESX) / 2;
-
-    if (ScreenHeight > DOOMGENERIC_RESY)
-        start_y = (ScreenHeight - DOOMGENERIC_RESY) / 2;
-
-    // 3. Direct Memory Copy (Manual Loop Implementation)
+    // 1. Get UEFI Video Details
+    UINT32 *VideoMem = (UINT32*)gop->Mode->FrameBufferBase;
+    UINT32 PixelsPerScanLine = gop->Mode->Info->PixelsPerScanLine;
     
-    // Cast both buffers to UINT32 pointer to treat them as pixels
-    UINT32 *src = (UINT32*)DG_ScreenBuffer;
-    // Ensure FrameBufferBase is treated as a UINT32 pointer
-    UINT32 *destBase = (UINT32*)FrameBufferBase; 
+    // 2. Loop through Doom's 640x400 buffer
+    // defined in your Makefile
+    int w = DOOMGENERIC_RESX; 
+    int h = DOOMGENERIC_RESY;
 
-    for (UINT32 y = 0; y < DOOMGENERIC_RESY; y++) {
-        if ((start_y + y) >= ScreenHeight) break;
+    for (int y = 0; y < h; y++)
+    {
+        for (int x = 0; x < w; x++)
+        {
+            // Get the 8-bit color index from Doom
+            unsigned char idx = DG_ScreenBuffer[y * w + x];
 
-        UINT32 *row_src = &src[y * DOOMGENERIC_RESX];
-        
-        // Use PixelsPerScanLine (2048) for the math, as you are doing now.
-        UINT32 dest_index = ((start_y + y) * PixelsPerScanLine) + start_x;
-        UINT32 *row_dest = &destBase[dest_index];
+            // Convert to UEFI 32-bit Color (BGR reserved)
+            // Note: If colors look blue/red swapped, swap the R and B shifts below
+            UINT32 pixel = (0xFF000000) |               // Reserved/Alpha
+                           (DG_Palette[idx].r << 16) |  // Red
+                           (DG_Palette[idx].g << 8) |   // Green
+                           (DG_Palette[idx].b);         // Blue
 
-        // --- DEBUG TEST ---
-        // 1. Force the source row to be PURE WHITE.
-        // This proves if the "drawing" part works.
-        // After you see the white box, delete this loop.
-        for(int k=0; k<DOOMGENERIC_RESX; k++) {
-             row_src[k] = 0xFFFFFFFF; 
+            // Write to Video Memory
+            // We use PixelsPerScanLine (Stride) to jump rows correctly
+            VideoMem[y * PixelsPerScanLine + x] = pixel;
         }
-        // ------------------
-
-        uefi_call_wrapper(ST->BootServices->CopyMem, 3, 
-                          row_dest, 
-                          row_src, 
-                          DOOMGENERIC_RESX * 4);
     }
-
-    // __asm__ __volatile__ ("wbinvd" ::: "memory");
 }
 
 void DG_SleepMs(uint32_t ms) {
@@ -125,8 +115,14 @@ uint32_t DG_GetTicksMs() {
         calibrate_tsc();
         start_tsc = read_tsc();
     }
+    
     UINT64 current_tsc = read_tsc();
-    return (uint32_t)((current_tsc - start_tsc) * 1000 / tsc_freq);
+    UINT64 delta = current_tsc - start_tsc;
+    
+    // Calculate milliseconds: (delta * 1000) / freq
+    // We use standard 64-bit math.
+    // Note: This wraps around if you play for >500,000 years.
+    return (uint32_t)((delta * 1000) / tsc_freq);
 }
 
 static unsigned char map_efi_key(EFI_INPUT_KEY k) {
