@@ -37,26 +37,12 @@ static UINT64 read_tsc() {
 }
 
 static void calibrate_tsc() {
-    UINT64 t1, t2;
-    
-    // 1. Snapshot TSC
-    t1 = read_tsc();
-    
-    // 2. Wait exactly 100,000 microseconds (0.1 seconds)
-    // The UEFI firmware provides this high-precision delay
+    UINT64 start = read_tsc();
+    // Stall for 100ms
     uefi_call_wrapper(ST->BootServices->Stall, 1, 100000);
-    
-    // 3. Snapshot TSC again
-    t2 = read_tsc();
-    
-    // 4. Calculate ticks per second (delta * 10 because we waited 0.1s)
-    tsc_freq = (t2 - t1) * 10;
-    
-    // Avoid division by zero paranoia
-    if (tsc_freq == 0) tsc_freq = 1; 
-    
-    // Print it just so we know it worked (debug info)
-    Print(L"TSC Calibrated: %lu Hz\r\n", tsc_freq);
+    UINT64 end = read_tsc();
+    tsc_freq = (end - start) * 10; // Ticks per second
+    if (tsc_freq == 0) tsc_freq = 2000000000; // Fallback to 2GHz
 }
 
 void DG_Init() {
@@ -79,29 +65,28 @@ void DG_DrawFrame() {
     // 1. Get UEFI Video Details
     UINT32 *VideoMem = (UINT32*)gop->Mode->FrameBufferBase;
     UINT32 PixelsPerScanLine = gop->Mode->Info->PixelsPerScanLine;
-    
-    // 2. Loop through Doom's 640x400 buffer
-    // defined in your Makefile
+
+    // 2. Setup Source Buffer
+    // Cast DG_ScreenBuffer to UINT32 because i_video.c already put 32-bit pixels there.
+    UINT32 *SrcBuffer = (UINT32*)DG_ScreenBuffer;
+
+    // Use the resolution defined in your build
     int w = DOOMGENERIC_RESX; 
     int h = DOOMGENERIC_RESY;
 
+    // 3. Copy Loop
     for (int y = 0; y < h; y++)
     {
-        for (int x = 0; x < w; x++)
-        {
-            // Get the 8-bit color index from Doom
-            unsigned char idx = DG_ScreenBuffer[y * w + x];
+        // Calculate offsets
+        // Source is tightly packed (w pixels wide)
+        // Destination has a stride (PixelsPerScanLine)
+        UINT32 *SrcRow = &SrcBuffer[y * w];
+        UINT32 *DestRow = &VideoMem[y * PixelsPerScanLine];
 
-            // Convert to UEFI 32-bit Color (BGR reserved)
-            // Note: If colors look blue/red swapped, swap the R and B shifts below
-            UINT32 pixel = (0xFF000000) |               // Reserved/Alpha
-                           (DG_Palette[idx].r << 16) |  // Red
-                           (DG_Palette[idx].g << 8) |   // Green
-                           (DG_Palette[idx].b);         // Blue
-
-            // Write to Video Memory
-            // We use PixelsPerScanLine (Stride) to jump rows correctly
-            VideoMem[y * PixelsPerScanLine + x] = pixel;
+        // Copy the entire row at once for performance
+        // (Note: You can use CopyMem/memcpy here if available in your EFI lib)
+        for (int x = 0; x < w; x++) {
+            DestRow[x] = SrcRow[x];
         }
     }
 }
@@ -167,8 +152,25 @@ int DG_GetKey(int* pressed, unsigned char* key) {
 
 void DG_SetWindowTitle(const char * title) {}
 
+static void InitFPU() {
+    // Reset FPU state (x87)
+    __asm__ volatile ("fninit");
+
+    // Set MXCSR to default (Mask all exceptions: 0x1F80)
+    // Bits 7-12 are exception masks. 0x1F80 masks them all.
+    // (Precision, Underflow, Overflow, Zero Divide, Denormal, Invalid Op)
+    uint32_t mxcsr = 0x1F80; 
+    __asm__ volatile ("ldmxcsr %0" : : "m" (mxcsr));
+}
+
+// 2. Add this strictly to satisfy some linkers that see 'float' usage
+int _fltused = 1;
+
 EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     InitializeLib(ImageHandle, SystemTable);
+
+    // CALL IT HERE, immediately after library init
+    InitFPU();
 
     // 1. Disable Watchdog Timer
     uefi_call_wrapper(SystemTable->BootServices->SetWatchdogTimer, 4, 0, 0, 0, NULL);
@@ -186,6 +188,13 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     ScreenWidth = gop->Mode->Info->HorizontalResolution;
     ScreenHeight = gop->Mode->Info->VerticalResolution;
     PixelsPerScanLine = gop->Mode->Info->PixelsPerScanLine;
+
+    if (gop->Mode->Info->PixelsPerScanLine > gop->Mode->Info->HorizontalResolution) {
+        PixelsPerScanLine = gop->Mode->Info->PixelsPerScanLine;
+    } else if (gop->Mode->Info->PixelsPerScanLine == 0) {
+        // Only fix if it's actually missing
+        PixelsPerScanLine = gop->Mode->Info->HorizontalResolution;
+    }
 
     // FIX: If UEFI returns 0 (common bug), use ScreenWidth instead.
     if (PixelsPerScanLine == 0) {
